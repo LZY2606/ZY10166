@@ -18,6 +18,8 @@ from typing import (
 
 if TYPE_CHECKING:
     from graphviz import Digraph
+
+    from ._audit import AuditReport
 try:
     from zope.interface.interface import InterfaceClass  # type:ignore[import-untyped]
 except ImportError:
@@ -613,6 +615,18 @@ class TypeMachine(Generic[InputProtocol, Core]):
             internals.__automat_data__ = dataFactory(result, core)
             txnr._state = state
         return result
+
+    def audit(self) -> "AuditReport[AnyState, str]":
+        """
+        Statically audit this machine's declared transitions.
+
+        This performs no construction of C{Core} objects, input-protocol
+        instances, or state-specific data, and executes no output actions.
+        See L{automat.auditAutomaton <automat._audit.auditAutomaton>}.
+        """
+        from ._audit import AuditReport
+
+        return self.__automat_automaton__.audit()
 
     def asDigraph(self) -> Digraph:
         from ._visualize import makeDigraph

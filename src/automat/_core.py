@@ -9,7 +9,18 @@ from __future__ import annotations
 
 import sys
 from itertools import chain
-from typing import Callable, Generic, Optional, Sequence, TypeVar, Hashable
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    Generic,
+    Optional,
+    Sequence,
+    TypeVar,
+    Hashable,
+)
+
+if TYPE_CHECKING:
+    from ._audit import AuditReport
 
 if sys.version_info >= (3, 10):
     from typing import TypeAlias
@@ -62,7 +73,20 @@ class Automaton(Generic[State, Input, Output]):
             initial = _NO_STATE  # type:ignore[assignment]
         assert initial is not None
         self._initialState: State = initial
-        self._transitions: set[tuple[State, Input, State, Sequence[Output]]] = set()
+        # Transitions are retained in the order in which they were
+        # successfully registered; deterministic, registration-ordered
+        # iteration (e.g. for static audits) must never rely on object hashes.
+        self._transitions: list[tuple[State, Input, State, Sequence[Output]]] = []
+        # Maps a (source state, input symbol) pair to its successfully
+        # registered transition, making addTransition/outputForInput O(1)
+        # rather than O(n) per lookup.
+        self._transitionsBySource: dict[
+            tuple[State, Input], tuple[State, Input, State, Sequence[Output]]
+        ] = {}
+        # Failed registrations (rejected with ValueError because a transition
+        # for the same source state and input already existed) are remembered
+        # in attempt order so that static audits can report the conflict.
+        self._conflicts: list[tuple[State, Input, State, Sequence[Output]]] = []
         self._unhandledTransition: Optional[tuple[State, Sequence[Output]]] = None
 
     @property
@@ -97,17 +121,20 @@ class Automaton(Generic[State, Input, Output]):
         Add the given transition to the outputSymbol. Raise ValueError if
         there is already a transition with the same inState and inputSymbol.
         """
-        # keeping self._transitions in a flat list makes addTransition
-        # O(n^2), but state machines don't tend to have hundreds of
-        # transitions.
-        for anInState, anInputSymbol, anOutState, _ in self._transitions:
-            if anInState == inState and anInputSymbol == inputSymbol:
-                raise ValueError(
-                    "already have transition from {} to {} via {}".format(
-                        inState, anOutState, inputSymbol
-                    )
+        outputSymbols = tuple(outputSymbols)
+        existing = self._transitionsBySource.get((inState, inputSymbol))
+        if existing is not None:
+            self._conflicts.append(
+                (inState, inputSymbol, outState, tuple(outputSymbols))
+            )
+            raise ValueError(
+                "already have transition from {} to {} via {}".format(
+                    inState, existing[2], inputSymbol
                 )
-        self._transitions.add((inState, inputSymbol, outState, tuple(outputSymbols)))
+            )
+        transition = (inState, inputSymbol, outState, outputSymbols)
+        self._transitions.append(transition)
+        self._transitionsBySource[(inState, inputSymbol)] = transition
 
     def unhandledTransition(
         self, outState: State, outputSymbols: Sequence[Output]
@@ -124,13 +151,44 @@ class Automaton(Generic[State, Input, Output]):
         """
         return frozenset(self._transitions)
 
+    def transitionsInRegistrationOrder(
+        self,
+    ) -> tuple[tuple[State, Input, State, Sequence[Output]], ...]:
+        """
+        All transitions, in the order in which they were successfully
+        registered.
+
+        This ordering is stable across runs and independent of object hashes,
+        C{repr}, or platform details; it is intended for static analysis.
+        """
+        return tuple(self._transitions)
+
+    def conflictingRegistrations(
+        self,
+    ) -> tuple[tuple[State, Input, State, Sequence[Output]], ...]:
+        """
+        Transitions that failed to register, in the order the attempts were
+        made.
+
+        A registration fails when another transition from the same source
+        state on the same input symbol had already been registered.  Each
+        tuple's first two elements identify the conflicted source state and
+        input; the last two describe the transition that was rejected.
+        """
+        return tuple(self._conflicts)
+
     def inputAlphabet(self) -> set[Input]:
         """
         The full set of symbols acceptable to this automaton.
         """
         return {
             inputSymbol
-            for (inState, inputSymbol, outState, outputSymbol) in self._transitions
+            for (
+                inState,
+                inputSymbol,
+                outState,
+                outputSymbol,
+            ) in self._transitions
         }
 
     def outputAlphabet(self) -> set[Output]:
@@ -162,12 +220,24 @@ class Automaton(Generic[State, Input, Output]):
         """
         A 2-tuple of (outState, outputSymbols) for inputSymbol.
         """
-        for anInState, anInputSymbol, outState, outputSymbols in self._transitions:
-            if (inState, inputSymbol) == (anInState, anInputSymbol):
-                return (outState, list(outputSymbols))
+        existing = self._transitionsBySource.get((inState, inputSymbol))
+        if existing is not None:
+            return (existing[2], list(existing[3]))
         if self._unhandledTransition is None:
             raise NoTransition(state=inState, symbol=inputSymbol)
         return self._unhandledTransition
+
+    def audit(self) -> "AuditReport[State, Input]":
+        """
+        Statically audit this automaton's declared structure without
+        executing any output actions.
+
+        See L{automat.auditAutomaton <automat._audit.auditAutomaton>} for
+        the semantics of the returned report.
+        """
+        from ._audit import auditAutomaton
+
+        return auditAutomaton(self)
 
 
 OutputTracer = Callable[[Output], None]

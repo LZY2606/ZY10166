@@ -529,6 +529,19 @@ class MethodicalMachine(object):
     def _setTrace(self) -> MethodicalTracer:
         return MethodicalTracer(self._automaton, self._symbol)
 
+    def audit(self):
+        """
+        Statically audit this machine's declared transitions without
+        instantiating the user's class or executing any input or output
+        methods.
+
+        See L{automat.auditAutomaton <automat._audit.auditAutomaton>} for the
+        semantics of the returned L{automat.AuditReport}.  Diagnostics
+        reference the L{MethodicalState} and L{MethodicalInput} objects
+        created when the machine was declared.
+        """
+        return self._automaton.audit()
+
     def asDigraph(self):
         """
         Generate a L{graphviz.Digraph} that represents this machine's

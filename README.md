@@ -149,3 +149,20 @@ All of the *inputs* are provided by calling them like methods, all of the
 *output behaviors* are automatically invoked when they are produced according
 to the outputs specified to `upon` and all of the states are simply opaque
 tokens.
+
+## Static auditing ##
+
+Beyond graphical visualization, Automat offers a read-only static audit that
+reports unreachable states, reachable dead ends, closed strongly-connected
+regions that can never return to the active region, and rejected duplicate
+registrations.  Each diagnosis comes with a shortest witnessing input
+sequence, and results are deterministically ordered by transition
+registration order without relying on object hashes or `repr`.  Auditing
+never executes an output action or constructs a user instance:
+
+```python
+report = newCoffeeMachine.audit()
+```
+
+See the [static auditing documentation](https://automat.readthedocs.io/en/latest/audit.html)
+for the full semantics and the O(V + E) complexity bound.

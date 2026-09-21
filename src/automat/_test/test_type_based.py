@@ -532,3 +532,124 @@ class TypeMachineTests(TestCase):
         machine = factory(NoOpCore(), data, notouchproto)
         self.assertIs(machine, catchdata[0].proto)
         self.assertEqual(machine.value(), 4)
+
+
+class AuditInputs(Protocol):
+    def start(self) -> None:
+        "leave the initial state"
+
+    def enterTrap(self) -> None:
+        "enter the trapped region"
+
+    def bounce(self) -> None:
+        "move between trap members"
+
+    def continueOn(self) -> None:
+        "move toward the dead end"
+
+
+def _buildAuditedTypeMachine():
+    """
+    Build a typed machine with one unreachable data state, a reachable dead
+    end, and a trapped component, without supplying implementations that do
+    real work.
+    """
+    builder = TypeMachineBuilder(AuditInputs, NoOpCore)
+    initial = builder.state("initial")
+    waiting = builder.state("waiting")
+    trap1 = builder.state("trap1")
+    trap2 = builder.state("trap2")
+    sealing = builder.state("sealing")
+    terminal = builder.state("terminal")
+    forgottenData = builder.state("forgottenData", lambda proto, core: object())
+
+    initial.upon(AuditInputs.start).to(waiting).returns(None)
+    waiting.upon(AuditInputs.enterTrap).to(trap1).returns(None)
+    trap1.upon(AuditInputs.bounce).to(trap2).returns(None)
+    trap2.upon(AuditInputs.bounce).to(trap1).returns(None)
+    waiting.upon(AuditInputs.continueOn).to(sealing).returns(None)
+    sealing.upon(AuditInputs.continueOn).to(terminal).returns(None)
+    # An unreachable data state with an internal self-loop; its data factory
+    # must never be invoked by auditing.
+    forgottenData.upon(AuditInputs.bounce).loop().returns(None)
+
+    return (
+        builder,
+        builder.build(),
+        dict(
+            initial=initial,
+            waiting=waiting,
+            trap1=trap1,
+            trap2=trap2,
+            sealing=sealing,
+            terminal=terminal,
+            forgottenData=forgottenData,
+        ),
+    )
+
+
+class TypedAuditTests(TestCase):
+    """
+    End-to-end coverage of the static audit through the public
+    L{TypeMachineBuilder}/L{TypeMachine} construction path.
+    """
+
+    def setUp(self) -> None:
+        self.builder, self.factory, self.states = _buildAuditedTypeMachine()
+        # Audit before constructing any input-protocol or Core instance.
+        self.report = self.factory.audit()
+
+    def test_auditBuildsNoInstances(self) -> None:
+        """
+        The data factory and all outputs take machine/core arguments; the
+        mere fact that audit() succeeds without supplying a core proves it
+        constructs nothing.
+        """
+        self.assertIsInstance(self.report.unreachableStates, tuple)
+
+    def test_unreachableDataStateMapsToStateObject(self) -> None:
+        (unreachable,) = self.report.unreachableStates
+        self.assertIs(unreachable.state, self.states["forgottenData"])
+        self.assertEqual(unreachable.state.name, "forgottenData")
+
+    def test_deadEndWitnessMapsToInputNames(self) -> None:
+        (deadEnd,) = self.report.deadEnds
+        self.assertIs(deadEnd.state, self.states["terminal"])
+        # Typed input tokens are the registered protocol method names.
+        self.assertEqual(deadEnd.witness, ("start", "continueOn", "continueOn"))
+        self.assertEqual(deadEnd.witnessTransitions, (0, 4, 5))
+        self.assertEqual(deadEnd.witnessCount, 1)
+
+    def test_trappedComponentMapsToStates(self) -> None:
+        (trap,) = self.report.trappedComponents
+        self.assertEqual(trap.states, (self.states["trap1"], self.states["trap2"]))
+        self.assertEqual(trap.witness, ("start", "enterTrap"))
+        self.assertEqual(trap.witnessTransitions, (0, 1))
+        self.assertEqual(trap.witnessCount, 1)
+
+    def test_noConflictsOnCleanlyBuiltMachine(self) -> None:
+        self.assertEqual(self.report.conflictingRegistrations, ())
+        self.assertFalse(self.report.isClean())
+
+    def test_duplicateTypedRegistrationIsRejectedButRecorded(self) -> None:
+        """
+        Declaring a second transition from the same state on the same input
+        raises ValueError (public behavior preserved), and the rejected
+        attempt is recorded on the builder's underlying automaton.
+        """
+        builder = TypeMachineBuilder(AuditInputs, NoOpCore)
+        initial = builder.state("initial")
+        target = builder.state("target")
+        initial.upon(AuditInputs.start).to(target).returns(None)
+        with self.assertRaises(ValueError):
+            initial.upon(AuditInputs.start).loop().returns(None)
+        report = builder._automaton.audit()
+        (conflict,) = report.conflictingRegistrations
+        self.assertIs(conflict.state, initial)
+        self.assertEqual(conflict.input, "start")
+        self.assertIs(conflict.existingTarget, target)
+        self.assertIs(conflict.attemptedTarget, initial)
+        self.assertEqual(conflict.witness, ("start",))
+
+    def test_auditReportIsDeterministic(self) -> None:
+        self.assertEqual(self.factory.audit(), self.report)

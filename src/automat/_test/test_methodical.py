@@ -740,3 +740,156 @@ class MethodicalTests(TestCase):
 # FIXME: wildcard state (in all states, when input X, emit Y and go to Z)
 # FIXME: wildcard input (in state X, when any input, emit Y and go to Z)
 # FIXME: combined wildcards (in any state for any input, emit Y go to Z)
+
+
+def _buildAuditedMethodicalMachine():
+    """
+    Declare a methodical machine containing every kind of audit finding and
+    return the class together with the raw state and input objects declared
+    (class-level attribute access on inputs triggers the input descriptor, so
+    the declared objects are captured while the class body executes).
+
+    Transitions:
+
+        ready --advance--> paused
+        paused --enterTrap--> trap1
+        trap1 --wiggle--> trap2
+        trap2 --wiggle--> trap1      (closed SCC {trap1, trap2})
+        paused --advance--> sealed
+        sealed --advance--> gone     (dead end)
+        forgotten --wiggle--> forgotten  (unreachable self-loop)
+
+    A rejected duplicate registration (ready/advance -> gone) is attempted.
+    """
+    refs = {}
+
+    class Audited(object):
+        machine = MethodicalMachine()
+
+        @machine.input()
+        def advance(self):
+            "move forward"
+
+        @machine.input()
+        def enterTrap(self):
+            "enter the trap"
+
+        @machine.input()
+        def wiggle(self):
+            "move within the trap"
+
+        @machine.output()
+        def shouldNotRun(self):
+            raise AssertionError("auditing must not execute output methods")
+
+        @machine.state(initial=True)
+        def ready(self):
+            "initial state"
+
+        @machine.state()
+        def paused(self):
+            "paused"
+
+        @machine.state()
+        def sealed(self):
+            "sealed"
+
+        @machine.state()
+        def trap1(self):
+            "trap member one"
+
+        @machine.state()
+        def trap2(self):
+            "trap member two"
+
+        @machine.state()
+        def gone(self):
+            "dead end"
+
+        @machine.state()
+        def forgotten(self):
+            "unreachable state"
+
+        refs.update(
+            advance=advance,
+            enterTrap=enterTrap,
+            wiggle=wiggle,
+            ready=ready,
+            paused=paused,
+            sealed=sealed,
+            trap1=trap1,
+            trap2=trap2,
+            gone=gone,
+            forgotten=forgotten,
+        )
+
+        ready.upon(advance, enter=paused, outputs=[])
+        paused.upon(enterTrap, enter=trap1, outputs=[])
+        trap1.upon(wiggle, enter=trap2, outputs=[])
+        trap2.upon(wiggle, enter=trap1, outputs=[])
+        paused.upon(advance, enter=sealed, outputs=[])
+        sealed.upon(advance, enter=gone, outputs=[])
+        forgotten.upon(wiggle, enter=forgotten, outputs=[])
+
+        try:
+            ready.upon(advance, enter=gone, outputs=[shouldNotRun])
+        except ValueError:
+            pass
+        else:  # pragma: no cover
+            raise AssertionError("duplicate registration must be rejected")
+
+    return Audited, refs
+
+
+class MethodicalAuditTests(TestCase):
+    """
+    End-to-end coverage of the static audit through the public
+    L{MethodicalMachine} construction path.
+    """
+
+    def setUp(self) -> None:
+        self.Audited, self.refs = _buildAuditedMethodicalMachine()
+        # Audit from the class-level machine without ever instantiating it.
+        self.report = self.Audited.machine.audit()
+
+    def test_auditDoesNotInstantiate(self) -> None:
+        """
+        Auditing works against the class-level machine and never constructs
+        an instance of the user's class.
+        """
+        self.assertIsInstance(self.report.unreachableStates, tuple)
+        self.assertIsInstance(self.report.deadEnds, tuple)
+
+    def test_unreachableStateMapsToStateObject(self) -> None:
+        (unreachable,) = self.report.unreachableStates
+        self.assertIs(unreachable.state, self.refs["forgotten"])
+        self.assertEqual(unreachable.state._name(), "forgotten")
+
+    def test_deadEndWitnessMapsToInputs(self) -> None:
+        (deadEnd,) = self.report.deadEnds
+        self.assertIs(deadEnd.state, self.refs["gone"])
+        advance = self.refs["advance"]
+        self.assertEqual(deadEnd.witness, (advance, advance, advance))
+        self.assertEqual(
+            [token._name() for token in deadEnd.witness],
+            ["advance", "advance", "advance"],
+        )
+        self.assertEqual(deadEnd.witnessCount, 1)
+
+    def test_trappedComponentMapsToStates(self) -> None:
+        (trap,) = self.report.trappedComponents
+        self.assertEqual(trap.states, (self.refs["trap1"], self.refs["trap2"]))
+        self.assertEqual(trap.witness, (self.refs["advance"], self.refs["enterTrap"]))
+        self.assertEqual(trap.witnessCount, 1)
+
+    def test_conflictMapsBackToSourceAndInput(self) -> None:
+        (conflict,) = self.report.conflictingRegistrations
+        self.assertIs(conflict.state, self.refs["ready"])
+        self.assertIs(conflict.input, self.refs["advance"])
+        self.assertIs(conflict.existingTarget, self.refs["paused"])
+        self.assertIs(conflict.attemptedTarget, self.refs["gone"])
+        self.assertEqual(conflict.witness, (self.refs["advance"],))
+        self.assertEqual(conflict.witnessTransitions, (0,))
+
+    def test_reportIsDeterministic(self) -> None:
+        self.assertEqual(self.Audited.machine.audit(), self.report)
