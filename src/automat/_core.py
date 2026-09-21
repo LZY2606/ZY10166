@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import sys
 from itertools import chain
-from typing import Callable, Generic, Optional, Sequence, TypeVar, Hashable
+from typing import TYPE_CHECKING, Callable, Generic, Optional, Sequence, TypeVar, Hashable
+
+if TYPE_CHECKING:
+    from ._audit import AuditReport
 
 if sys.version_info >= (3, 10):
     from typing import TypeAlias
@@ -62,7 +65,8 @@ class Automaton(Generic[State, Input, Output]):
             initial = _NO_STATE  # type:ignore[assignment]
         assert initial is not None
         self._initialState: State = initial
-        self._transitions: set[tuple[State, Input, State, Sequence[Output]]] = set()
+        self._transitions: list[tuple[State, Input, State, Sequence[Output]]] = []
+        self._conflicts: list[tuple[State, Input, State, State]] = []
         self._unhandledTransition: Optional[tuple[State, Sequence[Output]]] = None
 
     @property
@@ -102,12 +106,15 @@ class Automaton(Generic[State, Input, Output]):
         # transitions.
         for anInState, anInputSymbol, anOutState, _ in self._transitions:
             if anInState == inState and anInputSymbol == inputSymbol:
+                self._conflicts.append((inState, inputSymbol, anOutState, outState))
                 raise ValueError(
                     "already have transition from {} to {} via {}".format(
                         inState, anOutState, inputSymbol
                     )
                 )
-        self._transitions.add((inState, inputSymbol, outState, tuple(outputSymbols)))
+        self._transitions.append(
+            (inState, inputSymbol, outState, tuple(outputSymbols))
+        )
 
     def unhandledTransition(
         self, outState: State, outputSymbols: Sequence[Output]
@@ -168,6 +175,16 @@ class Automaton(Generic[State, Input, Output]):
         if self._unhandledTransition is None:
             raise NoTransition(state=inState, symbol=inputSymbol)
         return self._unhandledTransition
+
+    def audit(self) -> "AuditReport[State, Input]":
+        """
+        Perform a read-only static audit of this automaton's transition
+        graph, reporting unreachable states, dead ends, closed components,
+        and rejected duplicate registrations.  See L{automat._audit}.
+        """
+        from ._audit import AuditReport, auditAutomaton
+
+        return auditAutomaton(self)
 
 
 OutputTracer = Callable[[Output], None]

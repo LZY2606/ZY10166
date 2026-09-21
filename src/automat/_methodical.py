@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from functools import wraps
 from inspect import getfullargspec as getArgsSpec
 from itertools import count
-from typing import Any, Callable, Hashable, Iterable, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, Hashable, Iterable, TypeVar
 
 if sys.version_info < (3, 10):
     from typing_extensions import TypeAlias
@@ -16,6 +16,9 @@ else:
 
 from ._core import Automaton, OutputTracer, Tracer, Transitioner
 from ._introspection import preserveName
+
+if TYPE_CHECKING:
+    from ._audit import AuditReport
 
 ArgSpec = collections.namedtuple(
     "ArgSpec",
@@ -528,6 +531,16 @@ class MethodicalMachine(object):
     @property
     def _setTrace(self) -> MethodicalTracer:
         return MethodicalTracer(self._automaton, self._symbol)
+
+    def audit(self) -> AuditReport[MethodicalState, MethodicalInput]:
+        """
+        Statically audit this machine's transition graph, reporting
+        unreachable states, dead ends, closed components, and rejected
+        duplicate registrations, each with a shortest witness input
+        sequence.  This is read-only: no outputs are executed and no
+        instances are created.  See L{automat._audit}.
+        """
+        return self._automaton.audit()
 
     def asDigraph(self):
         """

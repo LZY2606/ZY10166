@@ -18,6 +18,8 @@ from typing import (
 
 if TYPE_CHECKING:
     from graphviz import Digraph
+
+    from ._audit import AuditReport
 try:
     from zope.interface.interface import InterfaceClass  # type:ignore[import-untyped]
 except ImportError:
@@ -623,6 +625,16 @@ class TypeMachine(Generic[InputProtocol, Core]):
             inputAsString=lambda input: input,
             outputAsString=lambda output: output.name,
         )
+
+    def audit(self) -> AuditReport[AnyState, str]:
+        """
+        Statically audit this machine's transition graph, reporting
+        unreachable states, dead ends, closed components, and rejected
+        duplicate registrations, each with a shortest witness input
+        sequence.  This is read-only: no outputs are executed and no
+        instances are created.  See L{automat._audit}.
+        """
+        return self.__automat_automaton__.audit()
 
 
 @dataclass(eq=False)

@@ -5,6 +5,13 @@ State-machines.
 from ._typed import TypeMachineBuilder, pep614, AlreadyBuiltError, TypeMachine
 from ._core import NoTransition
 from ._methodical import MethodicalMachine
+from ._audit import (
+    AuditReport,
+    ClosedComponent,
+    DeadEnd,
+    RegistrationConflict,
+    UnreachableState,
+)
 
 __all__ = [
     "TypeMachineBuilder",
@@ -13,4 +20,9 @@ __all__ = [
     "AlreadyBuiltError",
     "pep614",
     "MethodicalMachine",
+    "AuditReport",
+    "ClosedComponent",
+    "DeadEnd",
+    "RegistrationConflict",
+    "UnreachableState",
 ]
